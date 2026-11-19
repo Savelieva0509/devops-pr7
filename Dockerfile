@@ -20,7 +20,7 @@ RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --no-create-home app
 
 COPY app.py .
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown app:app /app/data
 
 USER app
 EXPOSE 8000
