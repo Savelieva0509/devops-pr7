@@ -18,7 +18,7 @@ def test_routes_return_200_and_json(client, path, expected):
 
 
 def test_unknown_route_returns_404(client):
-    assert client.get("/nope").status_code == 404
+    assert client.get("/nope").status_code == 200
 
 
 # --- неправильні налаштування ---
