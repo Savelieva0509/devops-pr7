@@ -1,0 +1,107 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/savelieva0509/devops-pr7
+
+jobs:
+  test:
+    name: Тести pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Встановити залежності
+        run: pip install -r requirements-dev.txt
+      - name: pytest
+        run: pytest -v --junitxml=reports/pytest.xml
+      - name: Зберегти звіт pytest
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pytest-report
+          path: reports/
+          if-no-files-found: ignore
+
+  build:
+    name: Збірка образу
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Зібрати образ (тег = хеш коміту)
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ github.sha }} \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            -t $IMAGE_NAME:${{ github.sha }} .
+          docker image ls $IMAGE_NAME
+      - name: Увійти в GHCR
+        if: github.event_name == 'push'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Опублікувати образ
+        if: github.event_name == 'push'
+        run: docker push $IMAGE_NAME:${{ github.sha }}
+
+  deploy:
+    name: Розгортання на VM
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, devops7]
+    timeout-minutes: 15
+    concurrency: deploy-vm
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      CONTAINER_NAME: devops7-app
+      APP_PORT: "8000"
+      REPORTS: reports
+    steps:
+      - uses: actions/checkout@v5
+      - name: Отримати образ з GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull $IMAGE_NAME:$IMAGE_TAG
+      - name: Підготувати Testinfra
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q -r requirements-dev.txt
+      - name: Розгорнути і перевірити (відкат при збої)
+        run: |
+          source .venv/bin/activate
+          scripts/deploy.sh "$IMAGE_TAG"
+      - name: Зберегти логи контейнера
+        if: always()
+        run: |
+          mkdir -p reports
+          docker logs devops7-app > reports/container.log 2>&1 || true
+          docker ps -a --filter name=devops7-app > reports/docker-ps.txt
+          cp ~/.devops7/current_tag reports/current_tag.txt 2>/dev/null || true
+      - name: Вийти з GHCR
+        if: always()
+        run: docker logout ghcr.io
+      - name: Завантажити звіти розгортання
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: deploy-reports
+          path: reports/
